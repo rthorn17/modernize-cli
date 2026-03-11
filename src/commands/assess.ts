@@ -6,7 +6,8 @@ import { detectTechStack, matchScenarios } from '../lib/tech-detector.js';
 import { installFlightPlan } from '../lib/installer.js';
 import { getFlightPlansRepoPath } from '../lib/catalog.js';
 import { generateModernizationPlan } from '../lib/plan-generator.js';
-import type { ScenarioMatch } from '../lib/types.js';
+import { scaffoldFlightPlan, suggestScenarioName, validateScenarioName } from '../lib/scaffolder.js';
+import type { FlightPlan, ScenarioMatch, TechStackDetection } from '../lib/types.js';
 
 export default class Assess extends Command {
   static override description =
@@ -120,61 +121,99 @@ export default class Assess extends Command {
       return;
     }
 
-    if (matches.length === 0) {
-      this.log(chalk.yellow('  No matching scenarios found in the Flight Plans catalog.'));
-      return;
-    }
-
     // ── Step 3: Display matches ────────────────────────────────────────
     this.log('');
-    this.displayMatches(matches);
+    if (matches.length > 0) {
+      this.displayMatches(matches);
+    } else {
+      this.log(chalk.yellow('  No matching scenarios found in the Flight Plans catalog.'));
+    }
+
+    // Always show the "Create New" option (even if no matches)
+    this.log('');
+    this.log(chalk.cyan.bold('  CREATE NEW'));
+    this.log(`    ${chalk.bold('[C]')} Create a NEW flight plan tailored to your detected tech stack`);
 
     // ── Step 4: User confirmation ──────────────────────────────────────
-    let confirmed: ScenarioMatch[];
-    if (autoInstall) {
-      confirmed = matches;
-      this.log(chalk.gray('  (--auto-install: selecting all matched scenarios)'));
-    } else {
-      confirmed = await this.confirmScenarios(matches);
-    }
-
-    if (confirmed.length === 0) {
-      this.log(chalk.yellow('\n  No scenarios selected for installation.'));
-      return;
-    }
-
-    // ── Step 5: Install flight plans ───────────────────────────────────
-    this.log('');
-    this.log(chalk.bold('Installing selected Flight Plans...'));
-
     const installed: Array<{
       scenarioName: string;
-      plan: ReturnType<typeof installFlightPlan>['plan'];
+      plan: FlightPlan;
       installedPath: string;
     }> = [];
 
-    for (const match of confirmed) {
-      try {
-        const result = installFlightPlan(match.scenario.name, projectDir, repoPath);
-        installed.push({
-          scenarioName: match.scenario.name,
-          plan: result.plan,
-          installedPath: result.installedPath,
-        });
-        this.log(
-          `  ${chalk.green('installed')}  ${match.scenario.name} v${result.plan.version}` +
-          ` -> ${result.installedPath}`,
-        );
-      } catch (err) {
-        this.log(
-          `  ${chalk.red('FAILED')}     ${match.scenario.name}: ${(err as Error).message}`,
-        );
+    if (autoInstall) {
+      // Auto-install selects all matches but does NOT scaffold
+      if (matches.length > 0) {
+        this.log(chalk.gray('  (--auto-install: selecting all matched scenarios)'));
+      }
+    } else {
+      const result = await this.confirmScenariosWithCreate(matches);
+
+      // Install selected catalog scenarios
+      if (result.selected.length > 0) {
+        this.log('');
+        this.log(chalk.bold('Installing selected Flight Plans...'));
+
+        for (const match of result.selected) {
+          try {
+            const installResult = installFlightPlan(match.scenario.name, projectDir, repoPath);
+            installed.push({
+              scenarioName: match.scenario.name,
+              plan: installResult.plan,
+              installedPath: installResult.installedPath,
+            });
+            this.log(
+              `  ${chalk.green('installed')}  ${match.scenario.name} v${installResult.plan.version}` +
+              ` -> ${installResult.installedPath}`,
+            );
+          } catch (err) {
+            this.log(
+              `  ${chalk.red('FAILED')}     ${match.scenario.name}: ${(err as Error).message}`,
+            );
+          }
+        }
+      }
+
+      // Scaffold new flight plans if requested
+      if (result.createNew) {
+        const scaffolded = await this.runScaffoldWorkflow(detections, projectDir);
+        installed.push(...scaffolded);
+      }
+
+      if (installed.length === 0) {
+        this.log(chalk.yellow('\n  No flight plans installed or scaffolded.'));
+        return;
       }
     }
 
-    if (installed.length === 0) {
-      this.log(chalk.red('\n  No flight plans were installed successfully.'));
-      return;
+    // For --auto-install path, install all matches
+    if (autoInstall && matches.length > 0) {
+      this.log('');
+      this.log(chalk.bold('Installing selected Flight Plans...'));
+
+      for (const match of matches) {
+        try {
+          const installResult = installFlightPlan(match.scenario.name, projectDir, repoPath);
+          installed.push({
+            scenarioName: match.scenario.name,
+            plan: installResult.plan,
+            installedPath: installResult.installedPath,
+          });
+          this.log(
+            `  ${chalk.green('installed')}  ${match.scenario.name} v${installResult.plan.version}` +
+            ` -> ${installResult.installedPath}`,
+          );
+        } catch (err) {
+          this.log(
+            `  ${chalk.red('FAILED')}     ${match.scenario.name}: ${(err as Error).message}`,
+          );
+        }
+      }
+
+      if (installed.length === 0) {
+        this.log(chalk.red('\n  No flight plans were installed successfully.'));
+        return;
+      }
     }
 
     // ── Step 6: Generate integrated plan ───────────────────────────────
@@ -187,7 +226,9 @@ export default class Assess extends Command {
         assessmentOutputPath,
         installedPlans: installed,
         detections,
-        matches: confirmed,
+        matches: matches.filter(m =>
+          installed.some(i => i.scenarioName === m.scenario.name),
+        ),
       });
       this.log(`  ${chalk.green('Generated:')} ${planPath}`);
     } catch (err) {
@@ -195,8 +236,17 @@ export default class Assess extends Command {
     }
 
     // ── Summary ────────────────────────────────────────────────────────
+    const scaffoldedCount = installed.filter(i =>
+      !matches.some(m => m.scenario.name === i.scenarioName),
+    ).length;
+    const catalogCount = installed.length - scaffoldedCount;
+
     this.log('');
-    this.log(chalk.bold.green('Done!') + ` ${installed.length} flight plan(s) installed.`);
+    this.log(
+      chalk.bold.green('Done!') +
+      ` ${catalogCount} flight plan(s) installed` +
+      (scaffoldedCount > 0 ? `, ${scaffoldedCount} custom plan(s) scaffolded.` : '.'),
+    );
     this.log('');
     this.log(chalk.gray('Next steps:'));
     this.log(chalk.gray('  modernize flightplan status                # View installed plan status'));
@@ -204,6 +254,8 @@ export default class Assess extends Command {
     this.log(chalk.gray('  modernize flightplan run 00-assess         # Start orchestration'));
     this.log(chalk.gray('  cat .github/modernize/modernization-plan.md  # View full plan'));
   }
+
+  // --- Display ---
 
   private displayMatches(matches: ScenarioMatch[]): void {
     const highMatches = matches.filter(m => m.confidence === 'high');
@@ -243,11 +295,14 @@ export default class Assess extends Command {
     }
   }
 
-  private async confirmScenarios(matches: ScenarioMatch[]): Promise<ScenarioMatch[]> {
-    // If not a TTY, can't prompt — return empty
+  // --- Interactive confirmation with Create option ---
+
+  private async confirmScenariosWithCreate(
+    matches: ScenarioMatch[],
+  ): Promise<{ selected: ScenarioMatch[]; createNew: boolean }> {
     if (!process.stdin.isTTY) {
       this.log(chalk.yellow('  Non-interactive terminal detected. Use --auto-install to install automatically.'));
-      return [];
+      return { selected: [], createNew: false };
     }
 
     const rl = readline.createInterface({
@@ -255,37 +310,164 @@ export default class Assess extends Command {
       output: process.stdout,
     });
 
-    return new Promise<ScenarioMatch[]>((resolve) => {
-      rl.question(
-        chalk.bold('\nSelect scenarios to install (comma-separated numbers, "all", or "none"): '),
-        (answer) => {
-          rl.close();
-          const trimmed = answer.trim().toLowerCase();
+    return new Promise<{ selected: ScenarioMatch[]; createNew: boolean }>((resolve) => {
+      const prompt = matches.length > 0
+        ? chalk.bold('\nSelect scenarios to install (comma-separated numbers, "all", "none", or "C" to create new): ')
+        : chalk.bold('\nEnter "C" to create a new flight plan, or "none" to skip: ');
 
-          if (trimmed === 'none' || trimmed === '' || trimmed === 'n') {
-            resolve([]);
-            return;
+      rl.question(prompt, (answer) => {
+        rl.close();
+        const trimmed = answer.trim().toLowerCase();
+
+        if (trimmed === 'none' || trimmed === '' || trimmed === 'n') {
+          resolve({ selected: [], createNew: false });
+          return;
+        }
+
+        if (trimmed === 'c' || trimmed === 'create') {
+          resolve({ selected: [], createNew: true });
+          return;
+        }
+
+        if (trimmed === 'all' || trimmed === 'a') {
+          resolve({ selected: matches, createNew: false });
+          return;
+        }
+
+        // Parse comma-separated tokens: numbers map to scenarios, "c" triggers create
+        const tokens = trimmed.split(',').map(s => s.trim());
+        let createNew = false;
+        const indices: number[] = [];
+
+        for (const token of tokens) {
+          if (token === 'c' || token === 'create') {
+            createNew = true;
+          } else {
+            const num = parseInt(token, 10) - 1;
+            if (num >= 0 && num < matches.length) {
+              indices.push(num);
+            }
           }
+        }
 
-          if (trimmed === 'all' || trimmed === 'a') {
-            resolve(matches);
-            return;
-          }
+        if (indices.length === 0 && !createNew) {
+          this.log(chalk.yellow('  No valid selections. Skipping.'));
+          resolve({ selected: [], createNew: false });
+          return;
+        }
 
-          const indices = trimmed
-            .split(',')
-            .map(s => parseInt(s.trim(), 10) - 1)
-            .filter(i => i >= 0 && i < matches.length);
+        resolve({
+          selected: indices.map(i => matches[i]),
+          createNew,
+        });
+      });
+    });
+  }
 
-          if (indices.length === 0) {
-            this.log(chalk.yellow('  No valid selections. Skipping installation.'));
-            resolve([]);
-            return;
-          }
+  // --- Scaffold workflow ---
 
-          resolve(indices.map(i => matches[i]));
-        },
+  private async runScaffoldWorkflow(
+    detections: TechStackDetection[],
+    projectDir: string,
+  ): Promise<Array<{ scenarioName: string; plan: FlightPlan; installedPath: string }>> {
+    const results: Array<{ scenarioName: string; plan: FlightPlan; installedPath: string }> = [];
+
+    // Pick which detection to base the scaffold on
+    let detection = detections[0];
+    if (detections.length > 1) {
+      this.log('');
+      this.log(chalk.bold('Multiple tech stacks detected. Which should the new flight plan target?'));
+      for (let i = 0; i < detections.length; i++) {
+        const d = detections[i];
+        this.log(`  [${i + 1}] ${d.repositoryType}: ${d.language}${d.framework ? ` ${d.framework}` : ''}`);
+      }
+      const choice = await this.promptForValue('  Select (default 1): ', '1');
+      const idx = parseInt(choice, 10) - 1;
+      if (idx >= 0 && idx < detections.length) {
+        detection = detections[idx];
+      }
+    }
+
+    let continueCreating = true;
+    while (continueCreating) {
+      this.log('');
+      this.log(chalk.bold.cyan('Creating a new Flight Plan scaffold...'));
+      this.log('');
+
+      const techSummary =
+        `${detection.repositoryType} / ${detection.language}` +
+        (detection.framework ? ` / ${detection.framework}` : '') +
+        (detection.frameworkVersion ? ` v${detection.frameworkVersion}` : '');
+      this.log(`  Detected tech: ${chalk.cyan(techSummary)}`);
+      this.log('');
+
+      const suggestedName = suggestScenarioName(detection);
+      const chosenName = await this.promptForValue(
+        `  Suggested scenario name: ${chalk.bold(suggestedName)}\n  Enter scenario name (or press Enter to accept): `,
+        suggestedName,
       );
+
+      const validation = validateScenarioName(chosenName, projectDir);
+      if (!validation.valid) {
+        this.log(chalk.red(`  Invalid name: ${validation.reason}`));
+        continue;
+      }
+
+      this.log('');
+      this.log(`  Scaffolding flight plan: ${chalk.bold(chosenName)}`);
+
+      try {
+        const result = scaffoldFlightPlan({
+          scenarioName: chosenName,
+          projectDir,
+          detection,
+        });
+
+        for (const file of result.createdFiles) {
+          this.log(`    ${chalk.green('created')}  ${file}`);
+        }
+
+        results.push({
+          scenarioName: chosenName,
+          plan: result.plan,
+          installedPath: result.installedPath,
+        });
+
+        this.log('');
+        this.log(
+          `  ${chalk.green('Scaffolded:')} ${chosenName} v${result.plan.version}` +
+          ` -> ${result.installedPath}`,
+        );
+      } catch (err) {
+        this.log(chalk.red(`  Failed to scaffold: ${(err as Error).message}`));
+      }
+
+      const another = await this.promptForValue(
+        '\n  Create another flight plan? (y/N): ',
+        'n',
+      );
+      continueCreating = another.toLowerCase() === 'y' || another.toLowerCase() === 'yes';
+    }
+
+    return results;
+  }
+
+  // --- Readline helper ---
+
+  private async promptForValue(prompt: string, defaultValue: string): Promise<string> {
+    if (!process.stdin.isTTY) return defaultValue;
+
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout,
+    });
+
+    return new Promise<string>((resolve) => {
+      rl.question(prompt, (answer) => {
+        rl.close();
+        const trimmed = answer.trim();
+        resolve(trimmed || defaultValue);
+      });
     });
   }
 }

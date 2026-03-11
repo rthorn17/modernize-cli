@@ -121,3 +121,13 @@ export interface ScenarioMatch {
   /** Which detected tech properties drove the match */
   matchedProperties: string[];
 }
+
+/** Result of scaffolding a new flight plan */
+export interface ScaffoldResult {
+  /** Absolute path where the scaffold was created */
+  installedPath: string;
+  /** The generated FlightPlan object */
+  plan: FlightPlan;
+  /** List of all created file paths (relative to installedPath) */
+  createdFiles: string[];
+}
