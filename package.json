@@ -1,0 +1,42 @@
+{
+  "name": "@modernize/cli",
+  "version": "0.1.0",
+  "description": "Modernize CLI with native Flight Plans integration",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "modernize": "./bin/run.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "node bin/run.js"
+  },
+  "oclif": {
+    "bin": "modernize",
+    "dirname": "modernize",
+    "commands": "./dist/commands",
+    "topicSeparator": " ",
+    "topics": {
+      "flightplan": {
+        "description": "Manage and run Flight Plans for governed modernization"
+      },
+      "plan": {
+        "description": "Modernization plan commands (proxied to modernize.exe)"
+      }
+    }
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "@oclif/core": "^4.2.0",
+    "js-yaml": "^4.1.0",
+    "chalk": "^4.1.2"
+  },
+  "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^20.0.0",
+    "typescript": "^5.5.0"
+  }
+}
