@@ -81,3 +81,53 @@ export interface InstalledPlan {
   installedAt: string;
   source: string;
 }
+
+// --- Enhanced Assessment Types ---
+
+/** Detected technology stack of a project */
+export interface TechStackDetection {
+  /** Primary language (e.g., 'csharp', 'java', 'javascript', 'python', 'vb6', 'cobol') */
+  language: string;
+  /** Framework identifier (e.g., 'net6.0', 'net48', 'spring-boot') */
+  framework?: string;
+  /** Framework version string (e.g., '6.0', '4.8') */
+  frameworkVersion?: string;
+  /** Build system (e.g., 'msbuild', 'maven', 'gradle', 'npm', 'pip') */
+  buildSystem?: string;
+  /** Runtime/JDK/Node version if detectable */
+  runtimeVersion?: string;
+  /** Repository type for gate matching (e.g., 'dotnet', 'java', 'nodejs', 'python') */
+  repositoryType: string;
+  /** Raw evidence: the files and values that led to this detection */
+  evidence: DetectionEvidence[];
+}
+
+export interface DetectionEvidence {
+  file: string;
+  property: string;
+  value: string;
+}
+
+/** A scenario that matched the detected tech stack */
+export interface ScenarioMatch {
+  /** The scenario catalog entry */
+  scenario: ScenarioEntry;
+  /** The parsed flight plan */
+  plan: FlightPlan;
+  /** Confidence level of the match */
+  confidence: 'high' | 'medium' | 'low';
+  /** Why this scenario matched */
+  matchReason: string;
+  /** Which detected tech properties drove the match */
+  matchedProperties: string[];
+}
+
+/** Result of scaffolding a new flight plan */
+export interface ScaffoldResult {
+  /** Absolute path where the scaffold was created */
+  installedPath: string;
+  /** The generated FlightPlan object */
+  plan: FlightPlan;
+  /** List of all created file paths (relative to installedPath) */
+  createdFiles: string[];
+}
