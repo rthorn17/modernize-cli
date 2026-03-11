@@ -13,22 +13,16 @@ This CLI wraps the existing `modernize.exe` agent and adds native `flightplan` s
 ## Installation
 
 ```bash
-git clone <this-repo> modernize-cli
+git clone https://github.com/rthorn17/modernize-cli.git
 cd modernize-cli
 npm install
 npm run build
-```
-
-To run commands:
-
-```bash
-node bin/run.js <command>
-```
-
-Optionally, link it globally so `modernize` is available anywhere:
-
-```bash
 npm link
+```
+
+Once linked, the `modernize` command is available globally:
+
+```bash
 modernize --help
 ```
 
